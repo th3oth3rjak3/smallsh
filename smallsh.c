@@ -36,6 +36,8 @@
 #define REDIRECT_INPUT_OFF 0
 #define LOCAL_FUNCTION 0
 #define EXEC_FUNCTION 1
+#define MAX_PATH 255
+#define NULL_CHAR '\0'
 
 
 /****************************************************************
@@ -236,37 +238,33 @@ int local_status(int* fg_status){
  * processes when specified.
 ****************************************************************/
 
-int exec_me(char* argys[], int bg_proc, char* input_redirection_path, char* output_redirection_path, int input_redirection, int output_redirection, int* fg_status){
+int exec_me(char* argys[], int process_type, char* input_redirection_path, char* output_redirection_path, int input_redirection, int output_redirection, int* fg_status){
 
     pid_t temp_pid = -1;
     int fd0 = -1;
     int fd1 = -1;
 
-    char my_in[255];
-    char my_out[255];
-    memset(my_in, '\0', 255);
-    memset(my_out, '\0', 255);
+    char my_in[MAX_PATH];
+    char my_out[MAX_PATH];
+    memset(my_in, NULL_CHAR, MAX_PATH);
+    memset(my_out, NULL_CHAR, MAX_PATH);
 
-    if(bg_proc == BG_CHILD_PROCESS && gbl_BG_MODE == BG_MODE_ON){
-        if(input_redirection == 0){
-            strcpy(my_in, "/dev/null");
-        } else {
-            if (strncmp(input_redirection_path, "./", 2) != 0){
+    if(process_type == BG_CHILD_PROCESS && gbl_BG_MODE == BG_MODE_ON){
+        if(input_redirection == REDIRECT_INPUT_ON) {
+            if (strncmp(input_redirection_path, "./", 2) != 0) {
                 strcpy(my_in, "./");
                 strcat(my_in, input_redirection_path);
-            } else {
-                strcpy(my_in, input_redirection_path);
             }
-        }
-        if(output_redirection == 0){
-            strcpy(my_out, "/dev/null");
         } else {
-            if (strncmp(output_redirection_path, "./", 2) != 0){
+                strcpy(my_in, input_redirection_path);
+        }
+        if(output_redirection == REDIRECT_OUTPUT_ON){
+            if (strncmp(output_redirection_path, "./", 2) != 0) {
                 strcpy(my_out, "./");
                 strcat(my_out, output_redirection_path);
-            } else {
-                strcpy(my_out, output_redirection_path);
             }
+        } else {
+            strcpy(my_out, output_redirection_path);
         }
     }
 
@@ -278,18 +276,18 @@ int exec_me(char* argys[], int bg_proc, char* input_redirection_path, char* outp
         case 0:
             /* Be childish */
 
-            if (bg_proc == BG_CHILD_PROCESS && gbl_BG_MODE == BG_MODE_ON){
+            if (process_type == BG_CHILD_PROCESS && gbl_BG_MODE == BG_MODE_ON){
                 sig_handlers(BG_CHILD_PROCESS);
             } else {
                 sig_handlers(FG_CHILD_PROCESS);
             }
 
-            if (input_redirection){
+            if (input_redirection == REDIRECT_INPUT_ON){
                 fd0 = open(input_redirection_path, O_RDONLY);
                 dup2(fd0, STDIN_FILENO); // Magic number 0 because STDIN_FILENO didn't work.
                 close(fd0);
             }
-            if (output_redirection){
+            if (output_redirection == REDIRECT_OUTPUT_ON){
                 fd1 = open(output_redirection_path, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
                 dup2(fd1, STDOUT_FILENO); // Magic number 1 because STDIN_FILENO didn't work.
                 close(fd1);
@@ -307,7 +305,7 @@ int exec_me(char* argys[], int bg_proc, char* input_redirection_path, char* outp
         default:
             //parent
             sig_handlers(PARENT_PROCESS);
-            if (bg_proc == PARENT_PROCESS || gbl_BG_MODE == BG_MODE_OFF){
+            if (process_type == PARENT_PROCESS || gbl_BG_MODE == BG_MODE_OFF){
                 waitpid(temp_pid, fg_status, 0);
             } else {
                 fprintf(stdout, "Background PID: %d\n", temp_pid);
@@ -329,7 +327,7 @@ int exec_me(char* argys[], int bg_proc, char* input_redirection_path, char* outp
  * input. If so, it sets bg_proc to BG_CHILD_PROCESS.
 ****************************************************************/
 
-int get_input(char* args[], int* argc, int* bg_proc, char* input_val, char* output_val, int* in_val, int* out_val){
+int get_input(char *args[], int *argc, int *process_type, char *input_path, char *output_path, int *input_redirect, int *output_redirect){
 
     char buf[COMMAND_LEN_MAX + 1];
     char cmds[COMMAND_LEN_MAX + 1];
@@ -342,13 +340,18 @@ int get_input(char* args[], int* argc, int* bg_proc, char* input_val, char* outp
     pid_t pid = getpid();
     char pid_str[PID_MAX_CHARS];
     sprintf(pid_str, "%d", pid);
-    int output_redirection = REDIRECT_OUTPUT_OFF;
-    int input_redirection = REDIRECT_INPUT_OFF;
-    int bg = BG_MODE_OFF;
-    char output_redirection_path[COMMAND_LEN_MAX] = {0};
-    char input_redirection_path[COMMAND_LEN_MAX] = {0};
-    char * word;
+    int background_mode = BG_MODE_OFF;
+    char output_redirection_path[MAX_PATH] = {0};
+    char input_redirection_path[MAX_PATH] = {0};
+    memset(output_redirection_path, NULL_CHAR, MAX_PATH);
+    memset(input_redirection_path, NULL_CHAR, MAX_PATH);
+    char *word;
 
+    *input_redirect = REDIRECT_INPUT_OFF;
+    *output_redirect = REDIRECT_OUTPUT_OFF;
+
+    strcpy(input_redirection_path, input_path);
+    strcpy(output_redirection_path, output_path);
 
     for (i = 0; i < j; i++){
         if (buf[i] == '\n'){
@@ -358,29 +361,30 @@ int get_input(char* args[], int* argc, int* bg_proc, char* input_val, char* outp
             i++;
             i++;
             x = 0;
-            output_redirection = 1;
+            *output_redirect = REDIRECT_OUTPUT_ON;
             while (1){
                 if (buf[i] == ' ' || buf[i] == '\n' || i == j) break;
                 output_redirection_path[x] = buf[i];
                 x++;
                 i++;
             }
-            output_redirection_path[x] = '\0';
+            output_redirection_path[x] = NULL_CHAR;
+            strcpy(output_path, output_redirection_path);
         } else if (buf[i] == '<' && i < (j - 1) && buf[i + 1] == ' '){
             i++;
             i++;
             x = 0;
-            input_redirection = 1;
+            *input_redirect = REDIRECT_INPUT_ON;
             while (1){
                 if (buf[i] == ' ' || buf[i] == '\n' || i == j) break;
                 input_redirection_path[x] = buf[i];
                 x++;
                 i++;
             }
-            input_redirection_path[x] = '\0';
+            input_redirection_path[x] = NULL_CHAR;
+            strcpy(input_path, input_redirection_path);
         } else if (buf[i] == '$' && (i < j - 1) && buf[i + 1] == '$'){
             i++;
-            //i++;
             for (x = 0; x < strlen(pid_str); x++){
                 cmds[k] = pid_str[x];
                 k++;
@@ -388,7 +392,6 @@ int get_input(char* args[], int* argc, int* bg_proc, char* input_val, char* outp
         } else {
             cmds[k] = buf[i];
             k++;
-            //i++;
         }
     }
 
@@ -396,28 +399,18 @@ int get_input(char* args[], int* argc, int* bg_proc, char* input_val, char* outp
     if ((k > 1) && (cmds[k - 1] == '&') && (cmds[k - 2] == ' ')){
         cmds[k - 1] = '\0';
         cmds[k - 2] = '\0';
-        bg = BG_CHILD_PROCESS;
+        background_mode = BG_CHILD_PROCESS;
     }
 
-    *in_val = input_redirection;
     if (errno != 0) fail("in_val", 1, 1);
-    *out_val = output_redirection;
     if (errno != 0) fail("out_val", 1, 1);
-    *bg_proc = bg;
+    *process_type = background_mode;
     if (errno != 0) fail("bg_proc", 1, 1);
-    strcpy(output_val, output_redirection_path);
-    if (strcmp(output_val, output_redirection_path) != 0) fail("output_val", 1, 1);
-    strcpy(input_val, input_redirection_path);
-    if (strcmp(output_val, output_redirection_path) != 0) fail("input_val", 1, 1);
-
     int y = 0;
-    errno = 0;
+
     for (word = strtok(cmds, CMD_DELIMITER); word; word = strtok(NULL, CMD_DELIMITER)){
         args[y] = word;
         y++;
-        if (errno != 0){
-            fail("strtok", 1, 1);
-        }
     }
     *argc = y;
 
@@ -474,20 +467,6 @@ void prepare_terminal(){
 }
 
 /****************************************************************
- *                     variable_cleanup
- *
- * This function is used to clean up previous variable values.
-****************************************************************/
-
-/*
-void variable_cleanup(char **cmd_argv[], int *cmd_argc, int *fg_status,
-int *bg_proc, int *last_bg_proc, ){
-
-}
-TODO: Finish this mess...
-*/
-
-/****************************************************************
  *                        main
  *
  * This function uses a loop to emulate a terminal application.
@@ -504,13 +483,10 @@ int main(){
     int bg_proc = PARENT_PROCESS;
     int input_redirection = REDIRECT_INPUT_OFF;                   //for input redirection
     int output_redirection = REDIRECT_OUTPUT_OFF;                  //for output redirection
-    char input_redirection_path[COMMAND_LEN_MAX + 1];                //to hold the filename of the input redirection
-    char output_redirection_path[COMMAND_LEN_MAX + 1];               //to hold the filename of the output redirection
-    memset(input_redirection_path, '\0', COMMAND_LEN_MAX + 1);
-    memset(output_redirection_path, '\0', COMMAND_LEN_MAX + 1);
-
-    // Used to decide if exec function or local function.
-    int function_type;
+    char input_redirection_path[COMMAND_LEN_MAX + 1] = {0};                //to hold the filename of the input redirection
+    char output_redirection_path[COMMAND_LEN_MAX + 1] = {0};               //to hold the filename of the output redirection
+    int function_type; //the type of function to be executed
+    char *dev_null = "/dev/null";
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "EndlessLoop"
@@ -520,6 +496,8 @@ int main(){
         memset(cmd_argv, '\0', COMMAND_ARG_MAX + 1);
         memset(input_redirection_path, '\0', COMMAND_LEN_MAX + 1);
         memset(output_redirection_path, '\0', COMMAND_LEN_MAX + 1);
+        strcpy(input_redirection_path, dev_null); //default to /dev/null if not specified
+        strcpy(output_redirection_path, dev_null); //default to /dev/null if not specified
         cmd_argc = 0;
         sig_handlers(PARENT_PROCESS);
 
