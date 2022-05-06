@@ -38,6 +38,7 @@
 #define EXEC_FUNCTION 1
 #define MAX_PATH 255
 #define NULL_CHAR '\0'
+#define NEWLINE '\n'
 
 
 /****************************************************************
@@ -95,17 +96,16 @@ void fail(char* msg, int p_error, int terminate){
  * process completion.
 ****************************************************************/
 
-void child_handler(pid_t pid, int* status, int bg_proc){
-    if (bg_proc == BG_CHILD_PROCESS){
-        char pid_str[PID_MAX_CHARS]={0};
-        sprintf(pid_str, "%d", pid);
-        if (WIFEXITED(*status)){
-            fprintf(stdout, "PID %s finished with exit status: %d\n", pid_str, WEXITSTATUS(*status));
-            fflush(stdout);
-        } else if (WIFSIGNALED(*status)){
-            fprintf(stdout, " PID %s terminated by signal: %d\n", pid_str, WTERMSIG(*status));
-            fflush(stdout);
-        }
+void child_handler(pid_t pid, int status){
+
+    char pid_str[PID_MAX_CHARS]={0};
+    sprintf(pid_str, "%d", pid);
+    if (WIFEXITED(status)){
+        fprintf(stdout, "PID %s finished with exit status: %d\n", pid_str, WEXITSTATUS(status));
+        fflush(stdout);
+    } else if (WIFSIGNALED(status)){
+        fprintf(stdout, " PID %s terminated by signal: %d\n", pid_str, WTERMSIG(status));
+        fflush(stdout);
     }
 }
 
@@ -132,11 +132,11 @@ void handle_SIGINT(int sig){
 ****************************************************************/
 
 void parent_SIGTSTP(){
-    // TODO: print a useful message, don't allow background commands anymore
+    // todo: print a useful message, don't allow background commands anymore
     // until the user sends another SIGTSTP
     errno = 0;
     char msg[SMALL_BUFFER];
-    memset(msg, '\0', SMALL_BUFFER);
+    memset(msg, NULL_CHAR, SMALL_BUFFER);
     char * outmsg;
     int len = 0;
     if (gbl_BG_MODE == 1){
@@ -152,7 +152,7 @@ void parent_SIGTSTP(){
 }
 
 void fg_child_SIGINT(){
-    // TODO: help a child end itself when SIGINT is sent to foreground
+    // todo: help a child end itself when SIGINT is sent to foreground
 }
 
 /****************************************************************
@@ -168,7 +168,7 @@ void sig_handlers(int proc_type){
 
         signal(SIGINT, SIG_IGN);
         signal(SIGTSTP, parent_SIGTSTP);
-        //signal(SIGCHLD, SIG_IGN); //TODO: SIGCHLD, do_something
+        //signal(SIGCHLD, SIG_IGN); // todo: SIGCHLD, do_something
     }
     if (proc_type == FG_CHILD_PROCESS){
         signal(SIGINT, fg_child_SIGINT);
@@ -217,12 +217,12 @@ int local_cd(int argc, char** argv){
  * exit status of the last foreground child process to run.
 ****************************************************************/
 
-int local_status(int* fg_status){
-    if (WIFEXITED(*fg_status)){
-        fprintf(stdout, "Exit status: %d\n", WEXITSTATUS(*fg_status));
+int local_status(int fg_status){
+    if (WIFEXITED(fg_status)){
+        fprintf(stdout, "Exit status: %d\n", WEXITSTATUS(fg_status));
         fflush(stdout);
-    } else if (WIFSIGNALED(*fg_status)){
-        fprintf(stdout, "Terminated by signal: %d\n", WTERMSIG(*fg_status));
+    } else if (WIFSIGNALED(fg_status)){
+        fprintf(stdout, "Terminated by signal: %d\n", WTERMSIG(fg_status));
         fflush(stdout);
     }
 
@@ -240,33 +240,33 @@ int local_status(int* fg_status){
 
 int exec_me(char* argys[], int process_type, char* input_redirection_path, char* output_redirection_path, int input_redirection, int output_redirection, int* fg_status){
 
-    pid_t temp_pid = -1;
-    int fd0 = -1;
-    int fd1 = -1;
+    pid_t temp_pid;
+    int fd0;
+    int fd1;
+    char *modified_input_path;
+    char *modified_output_path;
+    char input_path_array[MAX_PATH];
+    char output_path_array[MAX_PATH];
+    memset(input_path_array, NULL_CHAR, MAX_PATH);
+    memset(output_path_array, NULL_CHAR, MAX_PATH);
 
-    char my_in[MAX_PATH];
-    char my_out[MAX_PATH];
-    memset(my_in, NULL_CHAR, MAX_PATH);
-    memset(my_out, NULL_CHAR, MAX_PATH);
 
-    if(process_type == BG_CHILD_PROCESS && gbl_BG_MODE == BG_MODE_ON){
-        if(input_redirection == REDIRECT_INPUT_ON) {
-            if (strncmp(input_redirection_path, "./", 2) != 0) {
-                strcpy(my_in, "./");
-                strcat(my_in, input_redirection_path);
-            }
-        } else {
-                strcpy(my_in, input_redirection_path);
-        }
-        if(output_redirection == REDIRECT_OUTPUT_ON){
-            if (strncmp(output_redirection_path, "./", 2) != 0) {
-                strcpy(my_out, "./");
-                strcat(my_out, output_redirection_path);
-            }
-        } else {
-            strcpy(my_out, output_redirection_path);
+    if(input_redirection == REDIRECT_INPUT_ON) {
+        if (strncmp(input_redirection_path, "./", 2) != 0 && strncmp(input_redirection_path, "/", 1) != 0) {
+            strcpy(input_path_array, "./");
+            strcat(input_path_array, input_redirection_path);
+            modified_input_path = input_path_array;
         }
     }
+
+    if(output_redirection == REDIRECT_OUTPUT_ON){
+        if (strncmp(output_redirection_path, "./", 2) != 0 && strncmp(output_redirection_path, "/", 1) != 0) {
+            strcpy(output_path_array, "./");
+            strcat(output_path_array, output_redirection_path);
+            modified_output_path = output_path_array;
+        }
+    }
+
 
     temp_pid = fork();
     switch (temp_pid){
@@ -276,7 +276,9 @@ int exec_me(char* argys[], int process_type, char* input_redirection_path, char*
         case 0:
             /* Be childish */
 
-            if (process_type == BG_CHILD_PROCESS && gbl_BG_MODE == BG_MODE_ON){
+            printf("child PID: %d\n", getpid());
+            fflush(stdout);
+            if (process_type == BG_CHILD_PROCESS){
                 sig_handlers(BG_CHILD_PROCESS);
             } else {
                 sig_handlers(FG_CHILD_PROCESS);
@@ -284,28 +286,31 @@ int exec_me(char* argys[], int process_type, char* input_redirection_path, char*
 
             if (input_redirection == REDIRECT_INPUT_ON){
                 fd0 = open(input_redirection_path, O_RDONLY);
-                dup2(fd0, STDIN_FILENO); // Magic number 0 because STDIN_FILENO didn't work.
+                dup2(fd0, 0); // Magic number 0 because STDIN_FILENO didn't work.
                 close(fd0);
             }
-            if (output_redirection == REDIRECT_OUTPUT_ON){
+            if (output_redirection == REDIRECT_OUTPUT_ON) {
                 fd1 = open(output_redirection_path, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-                dup2(fd1, STDOUT_FILENO); // Magic number 1 because STDIN_FILENO didn't work.
+                dup2(fd1, 1); // Magic number 1 because STDIN_FILENO didn't work.
                 close(fd1);
             }
+
 
             execvp(argys[0], argys);
             if (errno != 0) {
                 //shouldn't get to the next line if things go to plan.
                 char fail_msg[100];
                 strcpy(fail_msg, argys[0]);
+                strcat(fail_msg, NULL_CHAR);
                 errno = EINVAL;
                 fail(fail_msg, 1, 1);
+                exit(-1);
             }
 
         default:
             //parent
             sig_handlers(PARENT_PROCESS);
-            if (process_type == PARENT_PROCESS || gbl_BG_MODE == BG_MODE_OFF){
+            if (process_type == FG_CHILD_PROCESS || gbl_BG_MODE == BG_MODE_OFF){
                 waitpid(temp_pid, fg_status, 0);
             } else {
                 fprintf(stdout, "Background PID: %d\n", temp_pid);
@@ -327,92 +332,105 @@ int exec_me(char* argys[], int process_type, char* input_redirection_path, char*
  * input. If so, it sets bg_proc to BG_CHILD_PROCESS.
 ****************************************************************/
 
-int get_input(char *args[], int *argc, int *process_type, char *input_path, char *output_path, int *input_redirect, int *output_redirect){
+int get_input(char *command_words[], int *command_counter, int *background_mode, char *input_path,
+              char *output_path, int *input_redirect, int *output_redirect){
 
-    char buf[COMMAND_LEN_MAX + 1];
-    char cmds[COMMAND_LEN_MAX + 1];
-    fgets(buf, COMMAND_LEN_MAX, stdin);
+    char input_buffer[COMMAND_LEN_MAX];
+    char command_string[COMMAND_LEN_MAX];
+    fgets(input_buffer, COMMAND_LEN_MAX, stdin);
 
-    int i;
-    int j = strlen(buf);
-    int k = 0;
-    size_t x;
+    size_t outer_counter;
+    size_t input_length = strlen(input_buffer);
+    size_t inner_counter;
+    size_t counter;
     pid_t pid = getpid();
     char pid_str[PID_MAX_CHARS];
     sprintf(pid_str, "%d", pid);
-    int background_mode = BG_MODE_OFF;
     char output_redirection_path[MAX_PATH] = {0};
     char input_redirection_path[MAX_PATH] = {0};
     memset(output_redirection_path, NULL_CHAR, MAX_PATH);
     memset(input_redirection_path, NULL_CHAR, MAX_PATH);
     char *word;
 
+    *background_mode = BG_MODE_OFF;
     *input_redirect = REDIRECT_INPUT_OFF;
     *output_redirect = REDIRECT_OUTPUT_OFF;
+    *command_counter = 0;
+    inner_counter = 0;
 
     strcpy(input_redirection_path, input_path);
     strcpy(output_redirection_path, output_path);
 
-    for (i = 0; i < j; i++){
-        if (buf[i] == '\n'){
-            cmds[k] = '\0';
-            k++;
-        } else if (buf[i] == '>' && i < (j - 1) && buf[i + 1] == ' '){
-            i++;
-            i++;
-            x = 0;
+    for (outer_counter = 0; outer_counter < input_length; outer_counter++){
+        if (input_buffer[outer_counter] == NEWLINE){
+            command_string[inner_counter] = NULL_CHAR;
+            inner_counter++;
+        } else if (input_buffer[outer_counter] == '>' && outer_counter < (input_length - 1) &&
+            input_buffer[outer_counter + 1] == ' '){
+
+            outer_counter++;
+            outer_counter++;
+            counter = 0;
             *output_redirect = REDIRECT_OUTPUT_ON;
             while (1){
-                if (buf[i] == ' ' || buf[i] == '\n' || i == j) break;
-                output_redirection_path[x] = buf[i];
-                x++;
-                i++;
+                if (input_buffer[outer_counter] == ' ' || input_buffer[outer_counter] == NEWLINE ||
+                    outer_counter == input_length) break;
+
+                output_redirection_path[counter] = input_buffer[outer_counter];
+                counter++;
+                outer_counter++;
             }
-            output_redirection_path[x] = NULL_CHAR;
+            output_redirection_path[counter] = NULL_CHAR;
             strcpy(output_path, output_redirection_path);
-        } else if (buf[i] == '<' && i < (j - 1) && buf[i + 1] == ' '){
-            i++;
-            i++;
-            x = 0;
+        } else if (input_buffer[outer_counter] == '<' && outer_counter < (input_length - 1) &&
+            input_buffer[outer_counter + 1] == ' '){
+
+            outer_counter++;
+            outer_counter++;
+            counter = 0;
             *input_redirect = REDIRECT_INPUT_ON;
             while (1){
-                if (buf[i] == ' ' || buf[i] == '\n' || i == j) break;
-                input_redirection_path[x] = buf[i];
-                x++;
-                i++;
+                if (input_buffer[outer_counter] == ' ' || input_buffer[outer_counter] == NEWLINE ||
+                    outer_counter == input_length) break;
+
+                input_redirection_path[counter] = input_buffer[outer_counter];
+                counter++;
+                outer_counter++;
             }
-            input_redirection_path[x] = NULL_CHAR;
+            input_redirection_path[counter] = NULL_CHAR;
             strcpy(input_path, input_redirection_path);
-        } else if (buf[i] == '$' && (i < j - 1) && buf[i + 1] == '$'){
-            i++;
-            for (x = 0; x < strlen(pid_str); x++){
-                cmds[k] = pid_str[x];
-                k++;
+        } else if (input_buffer[outer_counter] == '$' && (outer_counter < input_length - 1) &&
+            input_buffer[outer_counter + 1] == '$'){
+
+            outer_counter++;
+
+            for (counter = 0; counter < strlen(pid_str); counter++){
+                command_string[inner_counter] = pid_str[counter];
+                inner_counter++;
             }
         } else {
-            cmds[k] = buf[i];
-            k++;
+            command_string[inner_counter] = input_buffer[outer_counter];
+            inner_counter++;
         }
     }
 
-    k = strlen(cmds);
-    if ((k > 1) && (cmds[k - 1] == '&') && (cmds[k - 2] == ' ')){
-        cmds[k - 1] = '\0';
-        cmds[k - 2] = '\0';
-        background_mode = BG_CHILD_PROCESS;
+    counter = strlen(command_string);
+
+    if ((counter > 1) && (command_string[counter - 1] == '&') &&
+        (command_string[counter - 2] == ' ' && gbl_BG_MODE == BG_MODE_ON)){
+
+        command_string[counter - 1] = NULL_CHAR;
+        command_string[counter - 2] = NULL_CHAR;
+        *background_mode = BG_MODE_ON;
+        *input_redirect = REDIRECT_INPUT_ON;
+        *output_redirect = REDIRECT_OUTPUT_ON;
     }
 
-    if (errno != 0) fail("in_val", 1, 1);
-    if (errno != 0) fail("out_val", 1, 1);
-    *process_type = background_mode;
-    if (errno != 0) fail("bg_proc", 1, 1);
-    int y = 0;
 
-    for (word = strtok(cmds, CMD_DELIMITER); word; word = strtok(NULL, CMD_DELIMITER)){
-        args[y] = word;
-        y++;
+    for (word = strtok(command_string, CMD_DELIMITER); word; word = strtok(NULL, CMD_DELIMITER)){
+        command_words[*command_counter] = word;
+        *command_counter = *command_counter + 1;
     }
-    *argc = y;
 
     return EXIT_SUCCESS;
 }
@@ -427,26 +445,32 @@ int get_input(char *args[], int *argc, int *process_type, char *input_path, char
  * failure, EXIT_FAILURE is returned.
 ****************************************************************/
 
-//TODO: is EXIT_FAILURE actually ever returned in here?
 
-int local_functions(int argc, char**argv, int* function_type, int* fg_status){
+void local_functions(int argc, char **argv, int *function_type, int *fg_status, int *process_type, int background_mode){
     int exit_status = EXIT_SUCCESS;
     if (strcmp(argv[0], "cd") == 0){
         exit_status = local_cd(argc, argv);
         *fg_status = exit_status;
+        *process_type = PARENT_PROCESS;
     } else if (strcmp(argv[0], "status") == 0){
         //do status here
-        exit_status = local_status(fg_status);
+        local_status(*fg_status);
+        *process_type = PARENT_PROCESS;
     } else if (strcmp(argv[0], "exit") == 0){
         //do exit here
-        //TODO: implement cleanup measures on
+        // todo: implement cleanup measures on
         exit(EXIT_SUCCESS);
     } else if (strncmp(argv[0], "#", 1) == 0){
         *function_type = LOCAL_FUNCTION;
+        *process_type = PARENT_PROCESS;
     } else {
         *function_type = EXEC_FUNCTION;
+        if (background_mode == BG_MODE_ON && gbl_BG_MODE == BG_MODE_ON) {
+            *process_type = BG_CHILD_PROCESS;
+        } else {
+            *process_type = FG_CHILD_PROCESS;
+        }
     }
-    return exit_status;
 }
 
 /****************************************************************
@@ -477,41 +501,54 @@ void prepare_terminal(){
 int main(){
 
     char* cmd_argv[COMMAND_ARG_MAX];        //to hold the command "words" after tokenizing
-    memset(cmd_argv, '\0', COMMAND_ARG_MAX + 1);
-    int cmd_argc = 0;                       //to hold the quantity of commands after tokenizing
-    int fg_status = 0;                      //to hold the exit status of the last foreground process
-    int bg_proc = PARENT_PROCESS;
-    int input_redirection = REDIRECT_INPUT_OFF;                   //for input redirection
-    int output_redirection = REDIRECT_OUTPUT_OFF;                  //for output redirection
-    char input_redirection_path[COMMAND_LEN_MAX + 1] = {0};                //to hold the filename of the input redirection
-    char output_redirection_path[COMMAND_LEN_MAX + 1] = {0};               //to hold the filename of the output redirection
+    pid_t temp_pid;
+    int cmd_argc;                       //to hold the quantity of commands after tokenizing
+    int fg_status;                      //to hold the exit status of the last foreground process
+    int bg_status; //to hold the last background status
+    int process_type;                   //to hold the type of process, parent, bg child, fg child etc.
+    int background_mode;
+    int input_redirection;                   //for input redirection
+    int output_redirection;                  //for output redirection
+    char input_redirection_path[COMMAND_LEN_MAX];                //to hold the filename of the input redirection
+    char output_redirection_path[COMMAND_LEN_MAX];               //to hold the filename of the output redirection
     int function_type; //the type of function to be executed
     char *dev_null = "/dev/null";
 
-#pragma clang diagnostic push
-#pragma ide diagnostic ignored "EndlessLoop"
     while(1){
-        bg_proc = PARENT_PROCESS;
+        printf("main pid: %d\n", getpid());
+        fflush(stdout);
+        process_type = PARENT_PROCESS;
         function_type = LOCAL_FUNCTION;
-        memset(cmd_argv, '\0', COMMAND_ARG_MAX + 1);
-        memset(input_redirection_path, '\0', COMMAND_LEN_MAX + 1);
-        memset(output_redirection_path, '\0', COMMAND_LEN_MAX + 1);
+        for (int i = 0; i < COMMAND_ARG_MAX; i++){
+            cmd_argv[i] = 0;
+        }
+        //memset(cmd_argv, NULL_CHAR, COMMAND_ARG_MAX);
+        memset(input_redirection_path, NULL_CHAR, COMMAND_LEN_MAX);
+        memset(output_redirection_path, NULL_CHAR, COMMAND_LEN_MAX);
         strcpy(input_redirection_path, dev_null); //default to /dev/null if not specified
         strcpy(output_redirection_path, dev_null); //default to /dev/null if not specified
         cmd_argc = 0;
         sig_handlers(PARENT_PROCESS);
+        background_mode = BG_MODE_OFF;
+        input_redirection = REDIRECT_INPUT_OFF;
+        output_redirection = REDIRECT_OUTPUT_OFF;
 
         while (cmd_argc == 0){
             prepare_terminal();
-            get_input(cmd_argv, &cmd_argc, &bg_proc, input_redirection_path, output_redirection_path, &input_redirection, &output_redirection);
+            get_input(cmd_argv, &cmd_argc, &background_mode, input_redirection_path,
+                      output_redirection_path, &input_redirection, &output_redirection);
         }
 
-        local_functions(cmd_argc, cmd_argv, &function_type, &fg_status);
+        local_functions(cmd_argc, cmd_argv, &function_type, &fg_status, &process_type, background_mode);
         if (function_type == EXEC_FUNCTION){
 
-            exec_me(cmd_argv, bg_proc, input_redirection_path, output_redirection_path, input_redirection, output_redirection, &fg_status);
+            exec_me(cmd_argv, process_type, input_redirection_path, output_redirection_path, input_redirection, output_redirection, &fg_status);
 
         }
+
+        temp_pid = waitpid(-1, &bg_status, WNOHANG);
+        if (temp_pid > 0){
+            child_handler(temp_pid, bg_status);
+        }
     }
-#pragma clang diagnostic pop
 }
