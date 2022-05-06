@@ -6,7 +6,7 @@
  * exec() family of functions, and implements builtin functions
  * such as exit, cd, and status.
 ****************************************************************/
-//testing git
+//test
 #define _BSD_SOURCE
 #define _XOPEN_SOURCE
 #include <unistd.h>
