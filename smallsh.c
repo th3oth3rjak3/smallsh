@@ -1,3 +1,5 @@
+
+
 /****************************************************************
  * Name: Jake Hathaway
  * Date: 5/4/2022
@@ -18,6 +20,7 @@
 #include <errno.h>
 #include <err.h>
 #include <fcntl.h>
+#include <signal.h>
 
 #define CHILDREN_MAX 20
 #define COMMAND_LEN_MAX 2048
@@ -252,7 +255,8 @@ int local_status(int status){
  * processes when specified.
 ****************************************************************/
 
-int exec_me(char *argys[], int process_type, char input_redirection_path[], char output_redirection_path[], int input_redirection, int output_redirection, int* fg_status){
+int exec_me(char *argys[], int process_type, char input_redirection_path[], char output_redirection_path[],
+            int input_redirection, int output_redirection, int* fg_status, int death_note[]){
 
     pid_t temp_pid;
     int fd0;
@@ -326,8 +330,6 @@ int exec_me(char *argys[], int process_type, char input_redirection_path[], char
             sig_handlers(PARENT_PROCESS);
             if (process_type == FG_CHILD_PROCESS || gbl_BG_MODE == BG_MODE_OFF){
                 waitpid(temp_pid, fg_status, 0);
-                // todo: read fg_status, decide if signal or exit, then print error message.
-                //child_handler(temp_pid, *fg_status, BG_MODE_OFF);
                 int temp = *fg_status;
                 if (WIFEXITED(temp)){
                     if (WEXITSTATUS(temp) != 0){
@@ -342,6 +344,13 @@ int exec_me(char *argys[], int process_type, char input_redirection_path[], char
             } else {
                 fprintf(stdout, "Background PID: %d\n", temp_pid);
                 fflush(stdout);
+                for (int i = 0; i < CHILDREN_MAX; i++){
+                    //todo test pile of children in death note.
+                    if (death_note[i] == 0){
+                        death_note[i] = temp_pid;
+                        break;
+                    }
+                }
             }
     }
 
@@ -394,7 +403,7 @@ int get_input(char *command_words[], int *command_counter, int *background_mode,
             command_string[inner_counter] = NULL_CHAR;
             inner_counter++;
         } else if (input_buffer[outer_counter] == '>' && outer_counter < (input_length - 1) &&
-            input_buffer[outer_counter + 1] == ' '){
+                   input_buffer[outer_counter + 1] == ' '){
 
             outer_counter++;
             outer_counter++;
@@ -411,7 +420,7 @@ int get_input(char *command_words[], int *command_counter, int *background_mode,
             output_redirection_path[counter] = NULL_CHAR;
             strcpy(output_path, output_redirection_path);
         } else if (input_buffer[outer_counter] == '<' && outer_counter < (input_length - 1) &&
-            input_buffer[outer_counter + 1] == ' '){
+                   input_buffer[outer_counter + 1] == ' '){
 
             outer_counter++;
             outer_counter++;
@@ -428,7 +437,7 @@ int get_input(char *command_words[], int *command_counter, int *background_mode,
             input_redirection_path[counter] = NULL_CHAR;
             strcpy(input_path, input_redirection_path);
         } else if (input_buffer[outer_counter] == '$' && (outer_counter < input_length - 1) &&
-            input_buffer[outer_counter + 1] == '$'){
+                   input_buffer[outer_counter + 1] == '$'){
 
             outer_counter++;
 
@@ -464,6 +473,22 @@ int get_input(char *command_words[], int *command_counter, int *background_mode,
     return EXIT_SUCCESS;
 }
 
+void order_66(int death_note[]){
+    for (size_t i = 0; i < CHILDREN_MAX; i++){
+        if (death_note[i] > 0){
+            // ask to die nicely
+            kill(death_note[i], SIGTERM);
+        }
+    }
+    for (size_t i = 0; i < CHILDREN_MAX; i++){
+        if (death_note[i] > 0){
+            // end of watch
+            kill(death_note[i], SIGKILL);
+        }
+    }
+}
+
+
 /****************************************************************
  *                        local_functions
  *
@@ -475,7 +500,8 @@ int get_input(char *command_words[], int *command_counter, int *background_mode,
 ****************************************************************/
 
 
-void local_functions(int argc, char **argv, int *function_type, int *fg_status, int *process_type, int background_mode){
+void local_functions(int argc, char **argv, int *function_type, int *fg_status,
+                     int *process_type, int background_mode, int death_note[]){
     int exit_status = EXIT_SUCCESS;
     if (strcmp(argv[0], "cd") == 0){
         exit_status = local_cd(argc, argv);
@@ -486,8 +512,7 @@ void local_functions(int argc, char **argv, int *function_type, int *fg_status, 
         local_status(*fg_status);
         *process_type = PARENT_PROCESS;
     } else if (strcmp(argv[0], "exit") == 0){
-        //do exit here
-        //todo: figure out how to kill all child processes before calling the next line.
+        order_66(death_note);
         exit(EXIT_SUCCESS);
     } else if (strncmp(argv[0], "#", 1) == 0){
         *function_type = LOCAL_FUNCTION;
@@ -542,13 +567,22 @@ int main(){
     char output_redirection_path[COMMAND_LEN_MAX];               //to hold the filename of the output redirection
     int function_type; //the type of function to be executed
     char *dev_null = "/dev/null";
+    int death_note[CHILDREN_MAX];
+
+    for (size_t i = 0; i < CHILDREN_MAX; i++){
+        death_note[i] = 0;
+    }
 
     while(1){
-        //printf("main pid: %d\n", getpid());
-        //fflush(stdout);
+
         temp_pid = waitpid(-1, &bg_status, WNOHANG);
         if (temp_pid > 0){
             child_handler(temp_pid, bg_status, BG_MODE_ON);
+            for (size_t i = 0; i < CHILDREN_MAX; i++){
+                if (death_note[i] == temp_pid){
+                    death_note[i] = 0;
+                }
+            }
         }
         process_type = PARENT_PROCESS;
         function_type = LOCAL_FUNCTION;
@@ -567,9 +601,13 @@ int main(){
         output_redirection = REDIRECT_OUTPUT_OFF;
 
         while (cmd_argc == 0){
-            temp_pid = waitpid(-1, &bg_status, WNOHANG);
-            if (temp_pid > 0) {
+            if (temp_pid > 0){
                 child_handler(temp_pid, bg_status, BG_MODE_ON);
+                for (size_t i = 0; i < CHILDREN_MAX; i++){
+                    if (death_note[i] == temp_pid){
+                        death_note[i] = 0;
+                    }
+                }
             }
             prepare_terminal();
             get_input(cmd_argv, &cmd_argc, &background_mode,
@@ -578,17 +616,22 @@ int main(){
         }
 
         local_functions(cmd_argc, cmd_argv, &function_type, &fg_status,
-                        &process_type, background_mode);
+                        &process_type, background_mode, death_note);
         if (function_type == EXEC_FUNCTION){
 
             exec_me(cmd_argv, process_type, input_redirection_path, output_redirection_path, input_redirection,
-                    output_redirection, &fg_status);
+                    output_redirection, &fg_status, death_note);
 
         }
 
         temp_pid = waitpid(-1, &bg_status, WNOHANG);
         if (temp_pid > 0){
             child_handler(temp_pid, bg_status, BG_MODE_ON);
+            for (size_t i = 0; i < CHILDREN_MAX; i++){
+                if (death_note[i] == temp_pid){
+                    death_note[i] = 0;
+                }
+            }
         }
     }
 }
