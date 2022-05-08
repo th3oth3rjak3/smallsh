@@ -509,9 +509,6 @@ void local_functions(int argc, char **argv, int *function_type, int *fg_status,
         local_status(*fg_status);                   // Call local status to print the status message to the screen
         *process_type = PARENT_PROCESS;             // Keep the process type set to parent (don't execute a fork)
     } else if (strcmp(argv[0], "exit") == 0){
-        for (int i = 0; i < COMMAND_ARG_MAX; i++){
-            free(argv[i]);
-        }
         order_66(death_note);                       // Issue order_66 kill command and exit
         gbl_EXIT = DO_EXIT;
     } else if (strncmp(argv[0], "#", 1) == 0){
@@ -580,84 +577,80 @@ int main(){
     }
 
     while(gbl_EXIT == NO_EXIT){
-        if (gbl_EXIT == NO_EXIT) {
-            for (int i = 0; i < COMMAND_ARG_MAX; i++) {
-                cmd_argv[i] = 0;
+        for (int i = 0; i < COMMAND_ARG_MAX; i++) {
+            cmd_argv[i] = 0;
+        }
+        temp_pid = waitpid(-1, &bg_status, WNOHANG);            // Check for BG children finished
+        if (temp_pid > 0) {
+            bg_child_status(temp_pid, bg_status);
+            for (size_t i = 0; i < CHILDREN_MAX; i++) {
+                if (death_note[i] == temp_pid) {
+                    death_note[i] = 0;                          // If the child is found on the list, remove because it's done
+                }
             }
-            temp_pid = waitpid(-1, &bg_status, WNOHANG);            // Check for BG children finished
+        }
+        process_type = PARENT_PROCESS;                          // Start shell in foreground local mode
+        function_type = LOCAL_FUNCTION;                         // Default to local function unless specified otherwise
+        for (int i = 0; i < COMMAND_ARG_MAX; i++) {
+            cmd_argv[i] = NULL;
+        }
+        memset(input_redirection_path, NULL_CHAR,
+               COMMAND_LEN_MAX);     // Clear array each time, set to null characters
+        memset(output_redirection_path, NULL_CHAR,
+               COMMAND_LEN_MAX);    // Clear array each time, set to null characters
+        strcpy(input_redirection_path, dev_null);                       // Default to /dev/null if not specified
+        strcpy(output_redirection_path, dev_null);                      // Default to /dev/null if not specified
+        cmd_argc = 0;                                                   // Set the command count to 0
+        sig_handlers(
+                PARENT_PROCESS);                                   // Initialize the signal handlers as the parent
+        background_mode = BG_MODE_OFF;                                  // Initialize background mode off to run in foreground
+        input_redirection = REDIRECT_INPUT_OFF;                         // Turn off input redirection
+        output_redirection = REDIRECT_OUTPUT_OFF;                       // Turn off output redirection
+
+        while (cmd_argc == 0) {                                          // If user enters no data, loop until they do
             if (temp_pid > 0) {
-                bg_child_status(temp_pid, bg_status);
+                bg_child_status(temp_pid, bg_status);                   // Give status on bg children finished
                 for (size_t i = 0; i < CHILDREN_MAX; i++) {
                     if (death_note[i] == temp_pid) {
-                        death_note[i] = 0;                          // If the child is found on the list, remove because it's done
+                        death_note[i] = 0;                              // Remove finished children from death note list
                     }
                 }
             }
-            process_type = PARENT_PROCESS;                          // Start shell in foreground local mode
-            function_type = LOCAL_FUNCTION;                         // Default to local function unless specified otherwise
-            for (int i = 0; i < COMMAND_ARG_MAX; i++) {
-                cmd_argv[i] = NULL;
-            }
-            memset(input_redirection_path, NULL_CHAR,
-                   COMMAND_LEN_MAX);     // Clear array each time, set to null characters
-            memset(output_redirection_path, NULL_CHAR,
-                   COMMAND_LEN_MAX);    // Clear array each time, set to null characters
-            strcpy(input_redirection_path, dev_null);                       // Default to /dev/null if not specified
-            strcpy(output_redirection_path, dev_null);                      // Default to /dev/null if not specified
-            cmd_argc = 0;                                                   // Set the command count to 0
-            sig_handlers(
-                    PARENT_PROCESS);                                   // Initialize the signal handlers as the parent
-            background_mode = BG_MODE_OFF;                                  // Initialize background mode off to run in foreground
-            input_redirection = REDIRECT_INPUT_OFF;                         // Turn off input redirection
-            output_redirection = REDIRECT_OUTPUT_OFF;                       // Turn off output redirection
+            prepare_terminal();                                         // Establish terminal character :
+            get_input(cmd_argv, &cmd_argc, &background_mode,
+                      input_redirection_path, output_redirection_path,
+                      &input_redirection, &output_redirection);
 
-            while (cmd_argc == 0) {                                          // If user enters no data, loop until they do
-                if (temp_pid > 0) {
-                    bg_child_status(temp_pid, bg_status);                   // Give status on bg children finished
-                    for (size_t i = 0; i < CHILDREN_MAX; i++) {
-                        if (death_note[i] == temp_pid) {
-                            death_note[i] = 0;                              // Remove finished children from death note list
-                        }
-                    }
+            // Get input retrieves all the input
+        }
+
+        local_functions(cmd_argc, cmd_argv, &function_type, &fg_status,
+                        &process_type, background_mode, death_note);
+
+        // Local functions parses the input to determine if a local function or not.
+
+        if (function_type == EXEC_FUNCTION) {
+
+            exec_me(cmd_argv, process_type, input_redirection_path, output_redirection_path, input_redirection,
+                    output_redirection, &fg_status, death_note);
+
+            // exec_me is the function that runs an exec function and forks off into child processes
+
+        }
+
+        temp_pid = waitpid(-1, &bg_status,
+                           WNOHANG);        // Check again for more children that have finished in the bg
+        if (temp_pid > 0) {
+            bg_child_status(temp_pid, bg_status);
+            for (size_t i = 0; i < CHILDREN_MAX; i++) {
+                if (death_note[i] == temp_pid) {
+                    death_note[i] = 0;
                 }
-                prepare_terminal();                                         // Establish terminal character :
-                get_input(cmd_argv, &cmd_argc, &background_mode,
-                          input_redirection_path, output_redirection_path,
-                          &input_redirection, &output_redirection);
-
-                // Get input retrieves all the input
-            }
-
-            local_functions(cmd_argc, cmd_argv, &function_type, &fg_status,
-                            &process_type, background_mode, death_note);
-
-            // Local functions parses the input to determine if a local function or not.
-
-            if (function_type == EXEC_FUNCTION) {
-
-                exec_me(cmd_argv, process_type, input_redirection_path, output_redirection_path, input_redirection,
-                        output_redirection, &fg_status, death_note);
-
-                // exec_me is the function that runs an exec function and forks off into child processes
-
-            }
-
-            temp_pid = waitpid(-1, &bg_status,
-                               WNOHANG);        // Check again for more children that have finished in the bg
-            if (temp_pid > 0) {
-                bg_child_status(temp_pid, bg_status);
-                for (size_t i = 0; i < CHILDREN_MAX; i++) {
-                    if (death_note[i] == temp_pid) {
-                        death_note[i] = 0;
-                    }
-                }
-            }
-            for (int i = 0; i < COMMAND_ARG_MAX; i++){
-                free(cmd_argv[i]);
             }
         }
         for (int i = 0; i < COMMAND_ARG_MAX; i++){
             free(cmd_argv[i]);
         }
+
     }
 }
