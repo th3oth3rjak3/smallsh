@@ -7,8 +7,6 @@
  * such as exit, cd, and status.
 ****************************************************************/
 
-#define _BSD_SOURCE
-#define _XOPEN_SOURCE
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -19,6 +17,11 @@
 #include <err.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/stat.h>
+//#include <libgen.h>
+//#include <dirent.h>
+//#define _BSD_SOURCE
+//#define _XOPEN_SOURCE
 
 #define CHILDREN_MAX 20
 #define COMMAND_LEN_MAX 2048
@@ -28,7 +31,6 @@
 #define PARENT_PROCESS 0
 #define FG_CHILD_PROCESS 1
 #define BG_CHILD_PROCESS 2
-#define SMALL_BUFFER 255
 #define BG_MODE_ON 1
 #define BG_MODE_OFF 0
 #define REDIRECT_OUTPUT_ON 1
@@ -42,6 +44,12 @@
 #define NEWLINE '\n'
 #define NO_EXIT 1
 #define DO_EXIT 0
+#define PARENT_NOT_BUSY 0
+#define PARENT_BUSY 1
+#define SIGNAL_RECEIVED 1
+#define NO_SIGNAL 0
+#define PREP_TERMINAL 1
+#define NO_PREP_TERMINAL 0
 
 /****************************************************************
  *                   Global Variables
@@ -55,9 +63,29 @@
  * parent process. It will be set back to 1 if a subsequent
  * SIGTSTP signal is sent to the parent process. Child processes
  * will not use this.
+ *
+ * gbl_EXIT: Is used to manage the while loop in main. When set,
+ * it is time to clean up and exit the program
+ *
+ * gbl_PARENT_BUSY: A state machine to let SIGTSTP handler decide
+ * whether to print the message or not.
+ *
+ * gbl_SIGTSTP_SIGNALED: When the parent process is busy, the
+ * signal handler will just set this global to indicate a signal
+ * has taken place.
+ *
+ * gbl_PREP_TERMINAL: A variable used to manage SIGTSTP signals
+ * and how the terminal input indicator ":" prints to the screen.
+ * If signal received while parent is busy, the terminal will be
+ * prepped automatically by the loop. If the terminal is awaiting
+ * input, an additional "\n:" will need to be printed out to the
+ * user to indicate that the terminal is accepting input.
 ****************************************************************/
 int gbl_BG_MODE = BG_MODE_ON;
 int gbl_EXIT = NO_EXIT;
+int gbl_PARENT_BUSY = PARENT_NOT_BUSY;
+int gbl_SIGTSTP_SIGNALED = NO_SIGNAL;
+int gbl_PREP_TERMINAL = NO_PREP_TERMINAL;
 
 /****************************************************************
  *                        bg_child_status
@@ -81,24 +109,41 @@ void bg_child_status(pid_t pid, int status){
 /****************************************************************
  *                        parent_SIGTSTP
  * This signal handler catches the SIGTSTP signal and prints a
- * message to STDOUT.
+ * message to STDOUT. It is also called by the parent process
+ * after a signal is indicated by the gbl_SIGTSTP_SIGNALED
+ * variable in case the parent was busy at the time of the signal.
 ****************************************************************/
 
 void parent_SIGTSTP(){
 
-    errno = 0;                                          // Clear the associated error with the signal
-    char * outmsg;                                      // Initialize new message pointer
-    int len = 0;                                        // Initialize a new length variable for the write command.
-    if (gbl_BG_MODE == BG_MODE_ON){                     // If background commands are allowed...
-        outmsg = "\nBackground Mode Disabled\n:";
-        len = 27;
-        gbl_BG_MODE = BG_MODE_OFF;                      // Set background mode to OFF
-    } else if (gbl_BG_MODE == BG_MODE_OFF){             // When background commands are not allowed...
-        outmsg = "\nBackground Mode Enabled\n:";
-        len = 26;
-        gbl_BG_MODE = BG_MODE_ON;                       // Set background mode to ON
+    if (gbl_PARENT_BUSY == PARENT_NOT_BUSY) {               // Check to see if the parent is free. Put message out if so.
+        errno = 0;                                          // Clear the associated error with the signal
+        char *outmsg;                                      // Initialize new message pointer
+        int len = 0;                                        // Initialize a new length variable for the write command.
+        if (gbl_BG_MODE == BG_MODE_ON) {                     // If background commands are allowed...
+            if (gbl_PREP_TERMINAL == PREP_TERMINAL) {       // If the signal was received while at the terminal print extra :
+                outmsg = "\nBackground Mode Disabled\n:";
+                len = 27;
+            } else {
+                outmsg = "\nBackground Mode Disabled\n";    // For when the parent sets its state to NOT_BUSY and then calls this function
+                len = 26;
+            }
+            gbl_BG_MODE = BG_MODE_OFF;                      // Set background mode to OFF
+        } else if (gbl_BG_MODE == BG_MODE_OFF) {             // When background commands are not allowed...
+            if (gbl_PREP_TERMINAL == PREP_TERMINAL) {
+                outmsg = "\nBackground Mode Enabled\n:";
+                len = 26;
+             } else {
+                outmsg = "\nBackground Mode Enabled\n";
+                len = 25;
+            }
+            gbl_BG_MODE = BG_MODE_ON;                       // Set background mode to ON
+        }
+        write(STDOUT_FILENO, outmsg, len);            // Write a nice reentrant safe message to the user
+        gbl_PREP_TERMINAL = NO_PREP_TERMINAL;
+    } else {
+        gbl_SIGTSTP_SIGNALED = SIGNAL_RECEIVED;
     }
-    write(STDOUT_FILENO, outmsg, len);                  // Write a nice reentrant safe message to the user
 }
 
 /****************************************************************
@@ -108,7 +153,7 @@ void parent_SIGTSTP(){
 ****************************************************************/
 
 void fg_child_SIGINT(){
-    exit(1);    // The child will exit.
+    exit(EXIT_FAILURE);    // The child will exit.
 }
 
 /****************************************************************
@@ -146,40 +191,22 @@ void sig_handlers(int proc_type){
 
 int local_cd(int argc, char** argv){
 
-    char msg_arr[MAX_PATH];                     // This character array is used to build the error messages.
-    memset(msg_arr, NULL_CHAR, MAX_PATH);       // Initialize array to null characters each time it's used.
-
     if (argc == 2){                             // When a path is supplied to the cd command
         if (chdir(argv[1]) == -1){              // If an error is detected, print a message
-            strcpy(msg_arr, "cd: ");
-            strcat(msg_arr, argv[1]);           // Show the user the argument that was incorrect, e.g. bad path
-            strcat(msg_arr, ": ");
-            strcat(msg_arr, strerror(ENOENT));  // Use the no such file or directory message.
-            strcat(msg_arr, "\n");
-            fprintf(stderr, "%s", msg_arr);
+            fprintf(stderr, "%s%s%s%s%s", "cd: ", argv[1], ": ", strerror(ENOENT), "\n");
             fflush(stderr);                     // Flush stderr to prevent problems
             errno = 0;                          // Reset errno when it gets set during chdir
             return EXIT_FAILURE;
         }
     } else if (argc == 1){                      // When no argument is supplied, should go to the HOME directory
         if (chdir(getenv("HOME")) == -1) {      // Go to environment var HOME, -1 is error.
-            strcpy(msg_arr, "cd: ");
-            strcat(msg_arr, getenv("HOME"));    // Show the user where cd tried to go before failing.
-            strcat(msg_arr, ": ");
-            strcat(msg_arr, strerror(ENOENT));  // Use the no such file or directory message.
-            strcat(msg_arr, "\n");
-            fprintf(stderr, "%s", msg_arr);
+            fprintf(stderr, "%s%s%s%s%s", "cd: ", getenv("HOME"), ": ", strerror(ENOENT), "\n");
             fflush(stderr);                     // Flush stderr to prevent problems
             errno = 0;                          // Reset errno when it gets set during chdir
             return EXIT_FAILURE;
         }
     } else {                                    // Case when too many arguments are supplied.
-        strcpy(msg_arr, "cd: ");
-        strcat(msg_arr, argv[2]);               // Show the user the first argument that caused the problem.
-        strcat(msg_arr, ": ");
-        strcat(msg_arr, strerror(EINVAL));      // Use the Invalid Argument message.
-        strcat(msg_arr, "\n");
-        fprintf(stderr, "%s", msg_arr);
+        fprintf(stderr, "%s%s%s%s%s", "cd: ", argv[2], ": ", strerror(EINVAL), "\n");
         fflush(stderr);                         // Flush stderr to prevent problems
         return EXIT_FAILURE;
     }
@@ -235,29 +262,19 @@ int exec_me(char *argys[], int process_type, char input_redirection_path[], char
             strcpy(input_path_array, "./");                     // Add a ./ to the start of any files missing ./ or /
             strcat(input_path_array, input_redirection_path);   // Add the user supplied path
             modified_input_path = input_path_array;             // Point to the new array.
-
-            if ((fd0 = open(modified_input_path, O_RDONLY)) == -1){   // Try to open the redirect file, fail if not able.
-                strcpy(msg_arr, "< : ");
-                strcat(msg_arr, input_redirection_path);        // Show the user the bad path
-                strcat(msg_arr, ": ");
-                strcat(msg_arr, strerror(ENOENT));              // Use the no such file or directory message.
-                strcat(msg_arr, "\n");
-                fprintf(stderr, "%s", msg_arr);
-                fflush(stderr);                                 // Flush stderr to prevent problems
-                errno = 0;                                      // Reset errno when it gets set during open
-            } else {
-                if(close(fd0) == -1){                           // Try to close the file, if failure, send message
-                    strcpy(msg_arr, "Error closing : ");
-                    strcat(msg_arr, input_redirection_path);    // Show the user the bad path we couldn't close.
-                    strcat(msg_arr, "\n");
-                    fprintf(stderr, "%s", msg_arr);
-                    fflush(stderr);
-                    errno = 0;
-                }
-            }
         } else {
             modified_input_path = input_redirection_path;
         }
+        struct stat file_info;
+        stat(modified_input_path, &file_info);
+        if(S_ISREG(file_info.st_mode) || strcmp(modified_input_path, "/dev/null") == 0){
+        } else {
+            fprintf(stderr, "%s%s%s", "Error: cannot open ", input_redirection_path, " for input\n");
+            fflush(stderr);
+            *fg_status = 1 << 8;    // Exit status 1, readable by WEXITSTATUS.
+            return EXIT_FAILURE;
+        }
+
     }
 
     if(output_redirection == REDIRECT_OUTPUT_ON){
@@ -273,10 +290,7 @@ int exec_me(char *argys[], int process_type, char input_redirection_path[], char
     temp_pid = fork();                                      // Create a child process using fork. Save pid.
     switch (temp_pid){
         case -1:
-            strcpy(msg_arr, "fork : ");
-            strcat(msg_arr, strerror(ECHILD));              // Use the No child processes message.
-            strcat(msg_arr, "\n");
-            fprintf(stderr, "%s", msg_arr);
+            fprintf(stderr, "%s%s%s", "fork: ", strerror(ECHILD), "\n");
             fflush(stderr);                                 // Flush stderr to prevent problems
             errno = ECHILD;
             exit(EXIT_FAILURE);
@@ -295,12 +309,16 @@ int exec_me(char *argys[], int process_type, char input_redirection_path[], char
             }
             if (output_redirection == REDIRECT_OUTPUT_ON) {         // Redirect file descriptors to output path
                 fd1 = open(modified_output_path, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+                if (fd1 < 0){
+                    fprintf(stderr, "%s%s%s", "Error: cannot open ", output_redirection_path, " for writing\n");
+                    exit(EXIT_FAILURE);
+                }
                 dup2(fd1, STDOUT_FILENO);                           // Flags above set to allow file creation
                 close(fd1);                                         // Close extra file descriptor after duplication
             }
 
             execvp(argys[0], argys);                                // Supply the exec function array to execvp for use
-            fprintf(stderr, "exec: %s\n", strerror(EINVAL));
+            fprintf(stderr, "Error: %s: %s\n", argys[0], strerror(EINVAL));
             fflush(stderr);                                         // Flush stderr to prevent problems
             errno = ENOEXEC;
             exit(EXIT_FAILURE);                                     // Terminate the program if exec doesn't work.
@@ -311,20 +329,22 @@ int exec_me(char *argys[], int process_type, char input_redirection_path[], char
                 waitpid(temp_pid, fg_status, 0);                    // Wait for the child process if in the foreground or bg mode disabled.
                 int temp = *fg_status;                              // Get the status of the finished child
                 if (WIFEXITED(temp)){                               // Check for exit condition
+                    /*
                     if (WEXITSTATUS(temp) != 0){
                         //memset(msg_arr, NULL_CHAR, MAX_PATH);
                         fprintf(stderr, "Exited with status: %d\n", WEXITSTATUS(temp));
                         fflush(stderr);                             // Flush stderr to prevent problems
                         errno = 0;
                     }
+                     */
                 } else if (WIFSIGNALED(temp)){
-                    fprintf(stderr, "Terminated by signal: %d\n", WTERMSIG(temp));
+                    fprintf(stderr, "%s%d%s", "\nTerminated by signal: ", WTERMSIG(temp), "\n");
                     fflush(stderr);
                     errno = 0;
                 }
 
             } else {
-                fprintf(stdout, "Background PID: %d\n", temp_pid);  // Report background PID of BG child process
+                fprintf(stdout, "%s%d%s","Background PID: ", temp_pid, "\n");  // Report background PID of BG child process
                 fflush(stdout);                                     // Flush stdout to prevent problems
                 for (int i = 0; i < CHILDREN_MAX; i++){
                     if (death_note[i] == 0){                        // Search through the array for an open space
@@ -495,15 +515,14 @@ void order_66(int death_note[]){
  *
  * This function uses the input commands from the user to decide
  * if the command is a local function or an exec command. It
- * also reads to see if the command is a comment.
+ * also reads to see if the command is a comment. It also calls
+ * any local commands and returns their results.
 ****************************************************************/
 
-void local_functions(int argc, char **argv, int *function_type, int *fg_status,
+void local_functions(int argc, char **argv, int *function_type, int const *fg_status,
                      int *process_type, int background_mode, int death_note[]){
-    int exit_status = EXIT_SUCCESS;                 // Initialize to 0
     if (strcmp(argv[0], "cd") == 0){
-        exit_status = local_cd(argc, argv);         // Execute cd command and return its exit value
-        *fg_status = exit_status;                   // Save the status to the status variable (used by status command)
+        local_cd(argc, argv);                       // Execute cd command
         *process_type = PARENT_PROCESS;             // Keep the process type set to parent (don't execute a fork)
     } else if (strcmp(argv[0], "status") == 0){
         local_status(*fg_status);                   // Call local status to print the status message to the screen
@@ -532,16 +551,11 @@ void local_functions(int argc, char **argv, int *function_type, int *fg_status,
 ****************************************************************/
 
 void prepare_terminal(){
-    char msg_arr[SMALL_BUFFER];                         // Used for any error messages.
-    memset(msg_arr, NULL_CHAR, SMALL_BUFFER);           // Initialize to null values
     errno = 0;                                          // Clear status before starting terminal
     fprintf(stdout, "%c", ':');
     fflush(stdout);
     if (errno != 0){                                    // Check for errors.
-        strcpy(msg_arr, "Terminal: ");
-        strcat(msg_arr, strerror(ENOTRECOVERABLE));     // Use the State not recoverable message
-        strcat(msg_arr, "\n");
-        fprintf(stderr, "%s", msg_arr);
+        fprintf(stderr, "%s%s%s", "Terminal: ", strerror(ENOTRECOVERABLE), "\n");
         fflush(stderr);                                 // Flush stderr to prevent problems
         exit(EXIT_FAILURE);
     }
@@ -580,15 +594,6 @@ int main(){
         for (int i = 0; i < COMMAND_ARG_MAX; i++) {
             cmd_argv[i] = 0;
         }
-        temp_pid = waitpid(-1, &bg_status, WNOHANG);            // Check for BG children finished
-        if (temp_pid > 0) {
-            bg_child_status(temp_pid, bg_status);
-            for (size_t i = 0; i < CHILDREN_MAX; i++) {
-                if (death_note[i] == temp_pid) {
-                    death_note[i] = 0;                          // If the child is found on the list, remove because it's done
-                }
-            }
-        }
         process_type = PARENT_PROCESS;                          // Start shell in foreground local mode
         function_type = LOCAL_FUNCTION;                         // Default to local function unless specified otherwise
         for (int i = 0; i < COMMAND_ARG_MAX; i++) {
@@ -606,50 +611,43 @@ int main(){
         background_mode = BG_MODE_OFF;                                  // Initialize background mode off to run in foreground
         input_redirection = REDIRECT_INPUT_OFF;                         // Turn off input redirection
         output_redirection = REDIRECT_OUTPUT_OFF;                       // Turn off output redirection
-
-        while (cmd_argc == 0) {                                          // If user enters no data, loop until they do
-            if (temp_pid > 0) {
-                bg_child_status(temp_pid, bg_status);                   // Give status on bg children finished
-                for (size_t i = 0; i < CHILDREN_MAX; i++) {
-                    if (death_note[i] == temp_pid) {
-                        death_note[i] = 0;                              // Remove finished children from death note list
-                    }
-                }
-            }
-            prepare_terminal();                                         // Establish terminal character :
-            get_input(cmd_argv, &cmd_argc, &background_mode,
-                      input_redirection_path, output_redirection_path,
-                      &input_redirection, &output_redirection);
-
-            // Get input retrieves all the input
-        }
-
-        local_functions(cmd_argc, cmd_argv, &function_type, &fg_status,
-                        &process_type, background_mode, death_note);
-
-        // Local functions parses the input to determine if a local function or not.
-
-        if (function_type == EXEC_FUNCTION) {
-
-            exec_me(cmd_argv, process_type, input_redirection_path, output_redirection_path, input_redirection,
-                    output_redirection, &fg_status, death_note);
-
-            // exec_me is the function that runs an exec function and forks off into child processes
-
-        }
-
-        temp_pid = waitpid(-1, &bg_status,
-                           WNOHANG);        // Check again for more children that have finished in the bg
+        temp_pid = waitpid(-1, &bg_status, WNOHANG);            // Check for BG children finished
         if (temp_pid > 0) {
-            bg_child_status(temp_pid, bg_status);
+            bg_child_status(temp_pid, bg_status);                   // Give status on bg children finished
             for (size_t i = 0; i < CHILDREN_MAX; i++) {
                 if (death_note[i] == temp_pid) {
-                    death_note[i] = 0;
+                    death_note[i] = 0;                              // Remove finished children from death note list
                 }
             }
         }
-        for (int i = 0; i < COMMAND_ARG_MAX; i++){
-            free(cmd_argv[i]);
+        gbl_PARENT_BUSY = PARENT_NOT_BUSY;                      // Set the parent state to not busy (used for SIGTSTP)
+        if (gbl_SIGTSTP_SIGNALED == SIGNAL_RECEIVED){
+            gbl_PREP_TERMINAL = NO_PREP_TERMINAL;               // Leave the extra : off since prepare_terminal will handle
+            parent_SIGTSTP();                                   // Calls the function
+            gbl_SIGTSTP_SIGNALED = NO_SIGNAL;                   // Clear the signaled state
+        }
+        prepare_terminal();
+        gbl_PREP_TERMINAL = PREP_TERMINAL;
+        get_input(cmd_argv, &cmd_argc, &background_mode,
+                  input_redirection_path, output_redirection_path,
+                  &input_redirection, &output_redirection);
+        gbl_PARENT_BUSY = PARENT_BUSY;                              // State machine to prevent SIGTSTP signal interruptions
+        if (cmd_argc > 0) {
+        // Get input retrieves all the input from the user and parses it.
+
+            local_functions(cmd_argc, cmd_argv, &function_type, &fg_status,
+                            &process_type, background_mode, death_note);
+            // Local functions parses the input to determine if a local function or not.
+
+            if (function_type == EXEC_FUNCTION) {
+                exec_me(cmd_argv, process_type, input_redirection_path, output_redirection_path, input_redirection,
+                        output_redirection, &fg_status, death_note);
+
+                // exec_me is the function that runs an exec function and forks off into child processes
+            }
+            for (int i = 0; i < COMMAND_ARG_MAX; i++){
+                free(cmd_argv[i]);
+            }
         }
 
     }
