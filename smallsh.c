@@ -1,6 +1,6 @@
 /****************************************************************
  * Name: Jake Hathaway
- * Date: 5/7/2022
+ * Date: 5/8/2022
  * Description: smallsh.c is a small shell program that can run
  * foreground processes, background processes, handles the
  * exec() family of functions, and implements builtin functions
@@ -18,10 +18,6 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/stat.h>
-//#include <libgen.h>
-//#include <dirent.h>
-//#define _BSD_SOURCE
-//#define _XOPEN_SOURCE
 
 #define CHILDREN_MAX 20
 #define COMMAND_LEN_MAX 2048
@@ -97,11 +93,14 @@ int gbl_PREP_TERMINAL = NO_PREP_TERMINAL;
 
 void bg_child_status(pid_t pid, int status){
 
-    if (WIFEXITED(status)){
-        fprintf(stdout, "PID %d finished with exit status: %d\n", pid, WEXITSTATUS(status)); // If exited, exit status
+    if (WIFEXITED(status)){                     // If background process exited.
+        fprintf(stdout, "%s%d%s%d%s","PID ", pid, " finished with exit status: ",
+                WEXITSTATUS(status), "\n");
+
         fflush(stdout);
-    } else if (WIFSIGNALED(status)){
-        fprintf(stdout, "PID %d terminated by signal: %d\n", pid, WTERMSIG(status));         // If signal, signal status
+    } else if (WIFSIGNALED(status)){            // If background process signaled.
+        fprintf(stdout, "%s%d%s%d%s", "PID ", pid, " terminated by signal: ",
+                WTERMSIG(status), "\n");
         fflush(stdout);
     }
 }
@@ -193,20 +192,20 @@ int local_cd(int argc, char** argv){
 
     if (argc == 2){                             // When a path is supplied to the cd command
         if (chdir(argv[1]) == -1){              // If an error is detected, print a message
-            fprintf(stderr, "%s%s%s%s%s", "cd: ", argv[1], ": ", strerror(ENOENT), "\n");
+            fprintf(stderr, "%s%s%s%s%s", "smallsh: cd: ", argv[1], ": ", strerror(ENOENT), "\n");
             fflush(stderr);                     // Flush stderr to prevent problems
             errno = 0;                          // Reset errno when it gets set during chdir
             return EXIT_FAILURE;
         }
     } else if (argc == 1){                      // When no argument is supplied, should go to the HOME directory
         if (chdir(getenv("HOME")) == -1) {      // Go to environment var HOME, -1 is error.
-            fprintf(stderr, "%s%s%s%s%s", "cd: ", getenv("HOME"), ": ", strerror(ENOENT), "\n");
+            fprintf(stderr, "%s%s%s%s%s", "smallsh: cd: ", getenv("HOME"), ": ", strerror(ENOENT), "\n");
             fflush(stderr);                     // Flush stderr to prevent problems
             errno = 0;                          // Reset errno when it gets set during chdir
             return EXIT_FAILURE;
         }
     } else {                                    // Case when too many arguments are supplied.
-        fprintf(stderr, "%s%s%s%s%s", "cd: ", argv[2], ": ", strerror(EINVAL), "\n");
+        fprintf(stderr, "%s%s%s%s%s", "smallsh: cd: ", argv[2], ": ", strerror(EINVAL), "\n");
         fflush(stderr);                         // Flush stderr to prevent problems
         return EXIT_FAILURE;
     }
@@ -222,10 +221,10 @@ int local_cd(int argc, char** argv){
 
 int local_status(int status){
     if (WIFEXITED(status)){
-        fprintf(stdout, "Exit status: %d\n", WEXITSTATUS(status));          // If it exited, return status
+        fprintf(stdout, "%s%d%s", "Exit status: ", WEXITSTATUS(status), "\n");          // If it exited, return status
         fflush(stdout);
     } else if (WIFSIGNALED(status)){
-        fprintf(stdout, "Terminated by signal: %d\n", WTERMSIG(status));    // If signaled, return signal
+        fprintf(stdout, "%s%d%s", "Terminated by signal: ", WTERMSIG(status), "\n");    // If signaled, return signal
         fflush(stdout);
     }
 
@@ -269,7 +268,7 @@ int exec_me(char *argys[], int process_type, char input_redirection_path[], char
         stat(modified_input_path, &file_info);
         if(S_ISREG(file_info.st_mode) || strcmp(modified_input_path, "/dev/null") == 0){
         } else {
-            fprintf(stderr, "%s%s%s", "Error: cannot open ", input_redirection_path, " for input\n");
+            fprintf(stderr, "%s%s%s", "smallsh: cannot open ", input_redirection_path, " for input\n");
             fflush(stderr);
             *fg_status = 1 << 8;    // Exit status 1, readable by WEXITSTATUS.
             return EXIT_FAILURE;
@@ -290,7 +289,7 @@ int exec_me(char *argys[], int process_type, char input_redirection_path[], char
     temp_pid = fork();                                      // Create a child process using fork. Save pid.
     switch (temp_pid){
         case -1:
-            fprintf(stderr, "%s%s%s", "fork: ", strerror(ECHILD), "\n");
+            fprintf(stderr, "%s%s%s", "smallsh: fork: ", strerror(ECHILD), "\n");
             fflush(stderr);                                 // Flush stderr to prevent problems
             errno = ECHILD;
             exit(EXIT_FAILURE);
@@ -310,7 +309,7 @@ int exec_me(char *argys[], int process_type, char input_redirection_path[], char
             if (output_redirection == REDIRECT_OUTPUT_ON) {         // Redirect file descriptors to output path
                 fd1 = open(modified_output_path, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
                 if (fd1 < 0){
-                    fprintf(stderr, "%s%s%s", "Error: cannot open ", output_redirection_path, " for writing\n");
+                    fprintf(stderr, "%s%s%s", "smallsh: cannot open ", output_redirection_path, " for writing\n");
                     exit(EXIT_FAILURE);
                 }
                 dup2(fd1, STDOUT_FILENO);                           // Flags above set to allow file creation
@@ -318,7 +317,7 @@ int exec_me(char *argys[], int process_type, char input_redirection_path[], char
             }
 
             execvp(argys[0], argys);                                // Supply the exec function array to execvp for use
-            fprintf(stderr, "Error: %s: %s\n", argys[0], strerror(EINVAL));
+            fprintf(stderr, "%s%s%s%s%s","smallsh: ", argys[0], ": " ,strerror(EINVAL), "\n");
             fflush(stderr);                                         // Flush stderr to prevent problems
             errno = ENOEXEC;
             exit(EXIT_FAILURE);                                     // Terminate the program if exec doesn't work.
