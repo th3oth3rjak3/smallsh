@@ -4,7 +4,7 @@ Description: smallsh is a small shell application written in C.
 
 To compile and use smallsh.c, enter the following into the terminal:
 
-gcc -std=c99 -o smallsh smallsh.c -Wall -Wextra -Wpedantic -Werror
+gcc -std=gnu99 -o smallsh smallsh.c -Wall -Wextra -Wpedantic -Werror
 
 smallsh supports the following local commands:
 
